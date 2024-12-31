@@ -169,6 +169,7 @@ except:
      */
     def setupTasks(Project project, File envDir, boolean isApplication, String parserVersion) {
         return { variant ->
+            def namespaceProvider = variant.getGenerateBuildConfigProvider().map({ p -> "namespace=${p.namespace.get()}.GleanMetrics" })
             def sourceOutputDir = "${project.buildDir}/generated/source/glean/${variant.dirName}/kotlin"
 
             def generateKotlinAPI = project.task("${TASK_NAME_PREFIX}SourceFor${variant.name.capitalize()}", type: Exec) {
@@ -186,11 +187,9 @@ except:
 
                 // Add local registry files as input to this task. They will be turned
                 // into `arg`s later.
-                for (String item : getYamlFiles(project)) {
-                    if (project.file(item).exists()) {
-                        inputs.file item
-                    }
-                }
+                def yamlFiles = getYamlFiles(project).findAll { project.file(it).exists() }
+                println("yamlFiles: ${yamlFiles}")
+                inputs.files yamlFiles
 
                 outputs.dir sourceOutputDir
 
@@ -242,37 +241,17 @@ except:
                     args "--expire-by-version=${project.ext.get("gleanExpireByVersion")}"
                 }
 
-                doFirst {
-                    // Get the name of the package as if it were to be used in the R or BuildConfig
-                    // files. This is required since applications can define different application ids
-                    // depending on the variant type: the generated API definitions don't need to be
-                    // different due to that.
-                    // Note that this needs to be done at evaluation time rather than configuration
-                    // time, otherwise the `namespace` property won't be available.
-                    TaskProvider buildConfigProvider = variant.getGenerateBuildConfigProvider()
-                    def configProvider = buildConfigProvider.get()
-                    def originalPackageName = configProvider.namespace.get()
+                argumentProviders << ({
+                    yamlFiles.collect { it.toString() }
+                    // inputs.files
+	            } as org.gradle.process.CommandLineArgumentProvider)
 
-                    args "-s"
-                    args "namespace=${originalPackageName}.GleanMetrics"
-
-                    // Add the potential 'metrics.yaml' files at evaluation-time, rather than
-                    // configuration-time. Otherwise the Gradle build will fail.
-                    inputs.files.forEach { file ->
-                        project.logger.lifecycle("Glean SDK - generating API from ${file.path}")
-                        args file.path
-                    }
-                }
-
-                // Only show the output if something went wrong.
-                ignoreExitValue = true
-                standardOutput = new ByteArrayOutputStream()
-                errorOutput = standardOutput
-                doLast {
-                    if (executionResult.get().exitValue != 0) {
-                        throw new GradleException("Glean code generation failed.\n\n${standardOutput.toString()}")
-                    }
-                }
+                argumentProviders << ({
+		            [
+                        "-s",
+                        namespaceProvider.get().toString(),
+		            ]
+	            } as org.gradle.process.CommandLineArgumentProvider)
             }
 
             def generateGleanMetricsDocs = project.task("${TASK_NAME_PREFIX}DocsFor${variant.name.capitalize()}", type: Exec) {
